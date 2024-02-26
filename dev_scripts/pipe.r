@@ -1,4 +1,0 @@
-
-#' @importFrom magrittr %>%
-#' @export
-magrittr::`%>%`
