@@ -1,113 +1,123 @@
 
-#' This function gets gene locations from an expression matrix (where rownames are genes)
-#' @param exp_mat Input is an expression matrix, where rownames are genes
-#' @return A matrix of gene locations with columns "geneid","chr","left","right"
-#' @export
-get_gene_locations=function(exp_mat){
 
-  yourgenes<-as.character(rownames(exp_mat))
+suppressMessages(library(argparse))
+library(SCGsuite)
 
 
-  # Create df and granges of all genes. These differ actually
-  ucsc_genes<-TxDb.Hsapiens.UCSC.hg38.knownGene::TxDb.Hsapiens.UCSC.hg38.knownGene
-  allgenes<-as.data.frame(org.Hs.eg.db::org.Hs.egSYMBOL)
+###########################################################
+################ INPUT PARAMETERS #########################
+###########################################################
+parser <- ArgumentParser()
 
-  ## get ucsc sequences
-  allgranges<-suppressMessages(GenomicFeatures::genes(ucsc_genes,single.strand.genes.only=FALSE,columns="gene_id"))
-  allgranges<-unlist(allgranges)
-  gene_ids<-names(allgranges)
-  allgranges<-data.frame(allgranges)
-  allgranges$gene_id<-gene_ids
 
-       
-  ##remove random sequences
-  toremove<-c("alt","fix","random")
-  seqnames_toremove<-c(grep(paste(toremove,collapse = "|"),allgranges$seqnames))
-  allgranges<-allgranges[-seqnames_toremove,]
+##### input files
+###########################################################
 
-  ##filter symbol df
-  commongenes<-intersect(allgenes$gene_id,allgranges$gene_id)
-  allgenes<-allgenes[allgenes$gene_id %in% commongenes,]
 
-  ##create final chrompos_mat
-  allgenes$start<-allgranges$start[match(allgenes$gene_id,allgranges$gene_id)]
-  allgenes$end<-allgranges$end[match(allgenes$gene_id,allgranges$gene_id)]
-  allgenes$chr<-allgranges$seqnames[match(allgenes$gene_id,allgranges$gene_id)]
+parser$add_argument("--input_seurat_files", help = "path to input seurat object",nargs="+")
+parser$add_argument("--min_cells", help = "minimum cells to pseudobulk")
+parser$add_argument("--indiv_column", help = "Column name containing Individual IDs")
+parser$add_argument("--celltype_column", help = "Column name containing cell-type labels")
+parser$add_argument("--assay", help = "Assay to use to pseudobulk. Normally, this is the 'counts' slot.")
+args <- parser$parse_args(commandArgs(TRUE))
 
-  ##filter for the genes we have
-  allgenes<-allgenes[allgenes$symbol %in% yourgenes,]
+input_seurat_list = TRUE
 
-  ##reorganize and return
-  allgenes<-allgenes[,c("symbol","chr","start","end")]
-  colnames(allgenes)<-c("geneid","chr","left","right")
-  return(allgenes)
+celltype_colname=as.character(args$celltype_column)
+indiv_colname=as.character(args$indiv_column)
+min.cells=as.numeric(args$min_cells)
+assay=args$assay
+input_seurat_list_files=args$input_seurat_files
 
+
+message("First, making sure that all Seurat objects have the same genes and celltypes..")
+
+so=readRDS(input_seurat_list_files[[1]])
+Seurat::DefaultAssay(so)=assay
+commongenes=rownames(so)
+celltypes_tokeep=unique(so[[]][,celltype_colname])
+for(i in 2:length(input_seurat_list_files)){
+    so=readRDS(input_seurat_list_files[[i]])
+    Seurat::DefaultAssay(so)=assay
+    genes=rownames(so)
+    celltypes=unique(so[[]][,celltype_colname])
+    celltypes_tokeep=intersect(celltypes,celltypes_tokeep)
+    commongenes=intersect(genes,commongenes)
 
 }
 
-#' Takes a list of seurat objects (split by cell type) and pseudobulks them.
-#' Current method is count aggregation + cpm normalisation (edgeR) followed by log2 scaling.
-#'
-#' @param seuratlist A list object where each element is a seurat object for cell type. Can easily be generated with the Seurat function <-SplitObject(split.by="CellType")
-#' @param min.cells Minimum amount of cells (per cell type) for a pseudobulk value to be obtained. Default is 100 cells, but it is recommended to perform power calculations to get an appropriate value.
-#' @export
+n_seurat_objs=length(input_seurat_list_files)
+message(paste0(n_seurat_objs," seurat objects were provided. Reading in Seurat obj 1 .."))
+seuratobj<-readRDS(input_seurat_list_files[[1]])
+seuratobj=seuratobj[commongenes,]
 
+celltypelist<-Seurat::SplitObject(seuratobj,split.by=celltype_colname)
+celltypelist=celltypelist[celltypes_tokeep]
+agg_count_list_full<-pseudobulk_counts(celltypelist,min.cells=min.cells,indiv_col=indiv_colname,assay=assay)
 
-pseudobulk_counts=function(seuratlist,min.cells=100,indiv_col="Sample_ID",assay="RNA"){
-  agg_count_list<-lapply(seuratlist,function(x){
-  Seurat::DefaultAssay(x) <- assay
-    metadata <- x[[]]
-
-    counts <- Seurat::GetAssayData(x, slot = "counts")
-    unique_ids <- unique(metadata[[indiv_col]])
-    indiv_table <- metadata %>% dplyr::count(get(indiv_col))
-    indiv_table <- indiv_table %>% dplyr::filter(n > min.cells)
-    colnames(indiv_table) <- c("unique_ids", "n")
-    unique_ids <- indiv_table$unique_ids
-    n_indiv_start <- length(unique_ids)
-
-    if (nrow(indiv_table) == 0) {
-      # Return an empty DF if no individuals pass min.cells threshold.
-      # This rarely happens when using a single seurat object, but when using a list 
-      # of seurat objects it may be common (10 individuals per seurat object for example.)
-      emptydf <- data.frame()[1:nrow(counts), ]
-      rownames(emptydf) <- rownames(counts)
-      return(emptydf)
-    } else {
-      cells <- rownames(metadata[which(metadata[[indiv_col]] == unique_ids[1]), ])
-      counts_2 <- Matrix::rowSums(counts[, cells])
-      finalmat <- data.frame(counts_2)
-      samplenames <- unique_ids[1]
-
-      if (length(unique_ids) > 1) {
-        for (i in 2:length(unique_ids)) {
-          cells <- rownames(metadata[which(metadata[[indiv_col]] == unique_ids[[i]]), ])
-          sample <- unique_ids[[i]]
-          counts_2 <- Matrix::rowSums(counts[, cells])
-          finalmat <- cbind(finalmat, counts_2)
-          samplenames <- c(samplenames, sample)
-        }
-      }
-      colnames(finalmat) <- samplenames
-      indiv_remain <- n_indiv_start - length(samplenames)    
-
-        return(finalmat)
-          }
-    })
+for(i in 2:length(input_seurat_list_files)){
+message(paste0(" Reading in Seurat obj ",i,".."))
+    seuratobj<-readRDS(input_seurat_list_files[[i]])
+    seuratobj=seuratobj[commongenes,]
+    celltypelist<-Seurat::SplitObject(seuratobj,split.by=celltype_colname)
+    agg_count_list<-pseudobulk_counts(celltypelist,min.cells=min.cells,indiv_col=indiv_colname,assay=assay)
+    agg_count_list<-agg_count_list[names(agg_count_list) %in% names(agg_count_list_full)]
+    agg_count_list<-agg_count_list[names(agg_count_list_full)]
+    agg_count_list_full<-Map(cbind,agg_count_list_full,agg_count_list)
 }
+nullvec=unlist(lapply(agg_count_list_full,is.null))
+dropped_celltypes=names(nullvec[which(nullvec==TRUE)])
+agg_count_list_full=Filter(Negate(is.null),agg_count_list_full)
 
-#' @export
 
-normalize_pseudobulk=function(agg_count_list){
-    agg_count_list<-lapply(agg_count_list,function(x){
-    if(length(x)==0){
-        return(NULL)
+agg_count_list_full=lapply(agg_count_list_full,function(df){df[, !is.na(names(df))]})
+
+for(i in 1:length(agg_count_list_full)){
+        write.table(agg_count_list_full[[i]],paste0(names(agg_count_list[i]),"_aggregated_counts.csv"))
     }
-    norm_x<-log2(edgeR::cpm(x)+1)
-    return(norm_x)
-  })
 
-  return(agg_count_list)
+agg_count_list_full=normalize_pseudobulk(agg_count_list_full)
 
+
+if(length(dropped_celltypes)>0){
+    message(paste0(dropped_celltypes," celltype was dropped due to no individuals passing min.cells criteria."))
 }
 
+
+for(i in 1:length(agg_count_list_full)){
+    write.table(agg_count_list_full[[i]],paste0(names(agg_count_list[i]),"_pseudobulk.csv"))
+}
+
+  ### 16th Jan 2024 - Add in a "fake" pseudobulk, sum counts for ALL cells
+
+print("Adding in a fake pseudobulk, summing counts for all cells")
+seuratobj<-readRDS(input_seurat_list_files[[1]])
+seuratobj=seuratobj[commongenes,]
+celltypelist<-list(seuratobj)
+names(celltypelist)<-"Bulk"
+    agg_count_list_full<-pseudobulk_counts(celltypelist,min.cells=min.cells,indiv_col=indiv_colname,assay=assay)
+
+    for(i in 2:length(input_seurat_list_files)){
+    message(paste0(" Reading in Seurat obj ",i,".."))
+    seuratobj<-readRDS(input_seurat_list_files[[i]])
+    seuratobj=seuratobj[commongenes,]
+    celltypelist<-list(seuratobj)
+    names(celltypelist)<-"Bulk"
+    agg_count_list<-pseudobulk_counts(celltypelist,min.cells=min.cells,indiv_col=indiv_colname,assay=assay)
+    agg_count_list<-agg_count_list[names(agg_count_list) %in% names(agg_count_list_full)]
+    agg_count_list<-agg_count_list[names(agg_count_list_full)]
+    agg_count_list_full<-Map(cbind,agg_count_list_full,agg_count_list)
+    }
+    nullvec=unlist(lapply(agg_count_list_full,is.null))
+    dropped_celltypes=names(nullvec[which(nullvec==TRUE)])
+    agg_count_list_full=Filter(Negate(is.null),agg_count_list_full)
+
+    for(i in 1:length(agg_count_list_full)){
+            write.table(agg_count_list_full[[i]],paste0(names(agg_count_list[i]),"_aggregated_counts.csv"))
+        }
+
+    agg_count_list_full=normalize_pseudobulk(agg_count_list_full)
+
+    for(i in 1:length(agg_count_list_full)){
+        write.table(agg_count_list_full[[i]],paste0(names(agg_count_list[i]),"_pseudobulk.csv"))
+    }
