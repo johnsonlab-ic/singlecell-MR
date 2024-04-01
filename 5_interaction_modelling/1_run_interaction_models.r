@@ -40,3 +40,8 @@ colnames(geno_mat)<-gsub("-",".",colnames(geno_mat))
 
 ##read in MatrixEQTL outputs, only testing significant associations 
 meqtl_outs=readRDS("mateqtlouts_0.2FDR.rds")
+
+common_names=intersect(colnames(exp_mat),covs$Individual_ID)
+common_names=intersect(common_names,colnames(geno_mat))
+common_names=intersect(common_names,colnames(geno_pcs))
+common_names=intersect(common_names,colnames(pcs))

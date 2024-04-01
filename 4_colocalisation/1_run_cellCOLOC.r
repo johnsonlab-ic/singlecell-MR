@@ -1,4 +1,6 @@
 
+##load helper functions from cellCOLOC_source.r
+source("cellCOLOC_source.r")
 
 # -============================================================================================================
 # -=-=-=-=-=-=-=- STEP 1. Read inputs -=-=-=-=-=-=-===
@@ -22,8 +24,6 @@ GWAS_name=gsub("_2022_COLOC_ready.txt","",GWAS)
 min_snps=100
 
 
-##load helper functions from cellCOLOC_source.r
-source("cellCOLOC_source.r")
 
 
 ## read in inputs - GWAS first
@@ -66,7 +66,7 @@ snp_locs=as.data.frame(data.table::fread(snp_locs_file))
 
 
 # create cellCOLOC object as defined in cellCOLOC_source.r. 
-# this object contains a list of each cell-type, each containing a list of regions. 
+# this is an S4 object which contains a list of each cell-type, each containing a list of regions. 
 # each subsequent region is a list in itself, containing data frames of beta, se, pvalue, FDR, and MAF information for each SNP in the region;
 # each row is a SNP, each column is a gene. This allows us to iterate over each gene, for each region, in each cell-type against the 
 # corresponding GWAS data (since COLOC is binary)
