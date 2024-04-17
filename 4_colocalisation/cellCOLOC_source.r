@@ -342,3 +342,169 @@ run_coloc_all=function(cellCOLOC_obj){
     return(df_all_results)
 
 }
+
+
+##define MR functions
+
+run_cellMR=function(cellCOLOC_obj,
+use_coloc_lead_snp=TRUE,
+coloc_res,pph4_cutoff=0.7,
+eqtl_FDR_cutoff=0.05,r2_cutoff=0.01,
+plink_bin=genetics.binaRies::get_plink_binary(),
+path_to_binaries="/path_to_binaries/EUR/EUR"){
+    
+    coloc_res=coloc_res %>% filter(PP.H4>pph4_cutoff)
+    if (nrow(coloc_res) == 0) {
+      message("No rows left after the pph4 cutoff")
+        return(NA)
+    }
+    
+    MR_results=list()
+    message(paste0(Sys.time(),": Preparing MR inputs. Pruning SNPs and harmonizing alleles.."))
+    if(use_coloc_lead_snp==TRUE){
+      message("Using coloc lead SNP as index SNP to prune around")
+    }
+    for(i in 1:nrow(coloc_res)){
+        
+        hit=coloc_res[i,]
+        region=hit$region
+        celltype=hit$celltype
+        gene=hit$gene
+        lead_snp=hit$lead_snp
+        
+
+        df=cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@FDR[,c("SNP",gene)]
+        df=df %>% filter((!!sym(gene)) <eqtl_FDR_cutoff) %>%
+          select(SNP, !!sym(gene)) %>%
+          rename_with(~ c("rsid", "pval")) %>% as.data.frame()
+        
+        if (nrow(df) == 0) {
+        # warning("No SNPs left after filtering for eQTL FDR in iteration ", i)
+            MR_results[[i]] = c(celltype,gene,NA,NA,NA)
+            next
+          }
+
+        if(use_coloc_lead_snp==TRUE){
+
+          ##this ensure that SNPS are pruned around the lead SNP by setting the p-value to zero.
+          ## Occasionnally, the lead SNP proposed by COLOC is not the strongest eQTL in the region.
+          if(use_coloc_lead_snp) {
+            df <- df %>%
+          mutate(pval = ifelse(rsid == lead_snp, 0, pval))
+            }
+            
+        }
+
+        ##do the LD pruning
+        suppressMessages(capture.output(snps_tokeep<-ieugwasr::ld_clump_local(df,clump_r2=r2_cutoff,clump_p=eqtl_FDR_cutoff,plink_bin=plink_bin,
+        bfile=path_to_binaries,clump_kb=1e6),file=nullfile()))
+
+        trait_beta <- cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@beta[, c("SNP",gene)] %>% filter(SNP %in% snps_tokeep$rsid)
+        trait_se <- cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@std_error[, c("SNP",gene)] %>% filter(SNP %in% snps_tokeep$rsid)
+        trait_alleles<-cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@maf_info[, c("snp","ref","alt")] %>% filter(snp %in% snps_tokeep$rsid)
+
+
+        gwas_beta<-cellCOLOC_obj@gwas[[region]]@beta %>% filter(rsid %in% snps_tokeep$rsid)
+        gwas_se <- cellCOLOC_obj@gwas[[region]]@std_error %>% filter(rsid %in% snps_tokeep$rsid)
+        gwas_alleles=cellCOLOC_obj@gwas[[region]]@alleles %>% filter(rsid %in% snps_tokeep$rsid)
+
+
+        ### MungeSumstats considers A2 to be the effect allele and not A1.
+        ### In the below code, A1 = effect allele (as by convention).
+        # https://neurogenomics.github.io/MungeSumstats/articles/MungeSumstats.html
+        ### Changing so that "gwas_A1" is actually gwas_alleles$A2 .
+        #Additionally, the SeqArray genotype data is in the form of 0,1,2 where 0 is alternate allele dosage.
+        #In MatrixEQTL additive model, the ref allele is therefore the effect allele.
+
+        mr_df=data.frame(SNP=trait_beta$SNP,eqtl_beta=trait_beta[,2],
+                         eqtl_se=trait_se[,2],
+                         eqtl_A1=trait_alleles$ref,
+                         eqtl_A2=trait_alleles$alt,
+                         gwas_beta=gwas_beta$b,
+                         gwas_se=gwas_se$se,
+                         gwas_A1=gwas_alleles$A2,
+                        gwas_A2=gwas_alleles$A1)
+
+        colnames(mr_df)=c("SNP","eqtl_beta","eqtl_se","eqtl_A1","eqtl_A2","gwas_beta","gwas_se","gwas_A1","gwas_A2")
+
+        #harmonize alleles
+        mr_df=mr_df %>%
+          mutate(
+            eqtl_beta = ifelse(eqtl_A1 != gwas_A1 & eqtl_A1 == gwas_A2, -eqtl_beta, eqtl_beta)
+          )
+        MRInputObject<-MendelianRandomization::mr_input(bx=mr_df$eqtl_beta,
+                                                        bxse=mr_df$eqtl_se,by=mr_df$gwas_beta,byse=mr_df$gwas_se)
+    
+      res=MendelianRandomization::mr_ivw(MRInputObject)
+      res=data.frame(Method="IVW",Estimate=res@Estimate,`P-value`=res@Pvalue,check.names=F,std_error=res@StdError)
+
+        mr_results=res %>% filter(Method == "IVW") %>%
+          mutate(
+            IVW_beta = signif(Estimate, digits = 4),
+            IVW_pval = signif(`P-value`, digits = 4),
+            IVW_se=std_error
+          ) %>%
+          select(IVW_beta, IVW_pval,IVW_se)
+
+        mr_results$IVs <- paste(unique(mr_df$SNP), collapse = ",")
+        mr_results$gene=gene
+        mr_results$celltype=celltype
+        mr_results=mr_results %>% select(celltype,gene,IVs,IVW_beta,IVW_pval,IVW_se)
+        
+        MR_results[[i]]=mr_results
+    }
+    MR_results=as.data.frame(do.call(rbind,MR_results))
+    return(MR_results)
+    
+    
+    
+}
+
+
+### S4 classes for cellCOLOC_obj
+
+setClass(
+  "regionData",
+  slots = list(
+    beta = "tbl_df",
+    std_error = "tbl_df",
+    pvalue = "tbl_df",
+    FDR = "tbl_df",
+    maf_info = "tbl_df"
+  )
+)
+
+
+
+# Define the cellType class
+setClass(
+  "cellType",
+  representation(
+    regions = "list",
+      n_indivs = "numeric"# A list of regionData objects
+  )
+)
+
+setClass(
+  "cellCOLOCObj",
+  slots = list(
+    cellTypes = "list",
+      gwas = "list",
+      gwasInfo = "character",
+      gwas_N="numeric",
+      gwas_S="ANY",
+      snp_locs="ANY",
+      gene_locs="ANY"
+  )
+)
+
+setClass(
+  "gwasData",
+  slots = list(
+    beta = "ANY",
+    std_error = "ANY",
+      pvalue="ANY",
+      maf="ANY",
+       alleles="ANY"
+  )
+)

@@ -13,7 +13,6 @@ calculate_ciseqtl=function(exp_mat,
   cisDist=1e6,
   covadj=FALSE,
   covadj_pc=FALSE,
-  covadj_pcs_n=5,
   geno_pcs_adj=TRUE,
   standardize=FALSE,
   cov_file,
@@ -39,7 +38,6 @@ calculate_ciseqtl=function(exp_mat,
   # from MatrixEQTL manual: "The order of genes in gene locations
   # does not have to match the order of gene expression"
 
-  # library(MatrixEQTL)
 
   cvrt=MatrixEQTL::SlicedData$new();
   if(covadj==TRUE){
@@ -147,7 +145,6 @@ optimize_eqtl=function(exp_mat,
   cisDist=1e6,
   filter_chr=TRUE,
   geno_pcs_adj=TRUE,
-  geno_pcs_n=3,
   chr="chr1",
   cov_file,
   covs_to_include,
@@ -367,28 +364,13 @@ get_residuals=function(exp_mat,covs_to_include,cov_file){
 
 
 
-  ###run the model, extract residuals
-  if ("Diagnosis" %in% covs_to_include) {
-    # Exclude "Diagnosis" and "Sample_Source" from the fixed effects
-    fixed_effects <- covs_to_include[!covs_to_include %in% c("Diagnosis", "Sample_Source")]
-    
-    # Include a random effect on Diagnosis and Sample_Source
-    lmmodel = paste0("gene ~1+ ", paste(fixed_effects, collapse = " + "), " + (1 + Diagnosis | Sample_Source)")
-  } else {
-    # Exclude "Sample_Source" from the fixed effects
-    fixed_effects <- covs_to_include[covs_to_include != "Sample_Source"]
-    
-    # Include a random effect on Sample_Source only
-    lmmodel = paste0("gene ~ 1+", paste(fixed_effects, collapse = " + "), " + (1 | Sample_Source)")
-  }
-  message(paste0("Obtaining residuals using lmer(): "),lmmodel)
-
-
+  lmmodel = paste0("gene ~ ", paste(covs_to_include, collapse = " + "))
   exp_mat=t(apply(exp_mat,1,function(x){
       
     lm_mat=data.frame(gene=x)
     lm_mat=cbind(lm_mat,covmat)
-      fit=lmerTest::lmer(lmmodel,lm_mat)
+      # fit=lmerTest::lmer(lmmodel,lm_mat)
+      fit=lm(lmmodel,lm_mat)
       resid(fit)
     
       

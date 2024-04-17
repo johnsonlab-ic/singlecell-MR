@@ -8,7 +8,7 @@ source("cellCOLOC_source.r")
 
 ###define inputs / output 
 
-
+#mateqtlouts.rds is a named list object. Each element is a MatrixEQTL output for a given cell-type.
 mateqtlouts="mateqtlouts.rds"
 GWAS="AD_2022_COLOC_ready.txt"
 maf_file="MAF_mat.csv"
@@ -26,7 +26,7 @@ min_snps=100
 
 
 
-## read in inputs - GWAS first
+## read in inputs - GWAS first (must be hg38, eQTLs are hg38)
 GWAS<-as.data.frame(suppressWarnings(data.table::fread(GWAS)))
 message(paste0(Sys.time(),": Checking column names.."))
 
@@ -78,6 +78,8 @@ maf_df=maf_df,gwas_type=GWAS_type,snp_locs=snp_locs,gene_locs=gene_locs)
 
 cellCOLOC_obj@gwas <- remove_small_regions(cellCOLOC_obj@gwas,min_snps=min_snps)
 cellTypes_names <- names(cellCOLOC_obj@cellTypes)
+
+#remove small regions (>100 SNPs) 
 for (cellType in cellTypes_names) {
 cellCOLOC_obj@cellTypes[[cellType]]@regions <- remove_small_regions(cellCOLOC_obj@cellTypes[[cellType]]@regions,min_snps=min_snps)
 }

@@ -148,9 +148,6 @@ common_names=intersect(colnames(exp_mat),colnames(geno_mat))
 if(cov_file_included==TRUE){
   covmat=read.table(cov_file)
   covmat=covmat[complete.cases(covmat),]
-  # if(length(grep(covs[1],rownames(covmat))>0)){
-  #   covmat=as.data.frame(t(covmat))
-  # }
   common_names=intersect(common_names,covmat$Individual_ID)
 }
 
@@ -210,28 +207,6 @@ scaled<-scale(t(exp_mat),scale=T,center=F)
 exp_mat<-as.data.frame(t(scaled))
 
 
-####################################
-### GET PCS ###
-####################################
-
-if(ncol(exp_mat)<100){
-    down_signif <- function(x, digits = 0) {
-        m <- 10^(ceiling(log(x, 10)) - digits)
-        (x %/% m)*m
-      }
-    
-    max_pcs=down_signif(ncol(exp_mat),1)/10
-}else{
-    max_pcs=10
-}
-message("Getting PCs...")
-pcs<-prcomp(exp_mat,scale=F,center=F)
-pcs<-pcs$rotation
-pcs<-pcs[,1:(max_pcs*10)]
-pcs<-t(pcs)
-pcs<-pcs[,colnames(exp_mat)]
-rownames(pcs)<-paste0(rep("PC."),1:(max_pcs*10))
-write.table(pcs,paste0(name,"_full_expression_PCs.txt"))
 
 ####################################
 ### GET GENO PCS ###
@@ -243,9 +218,10 @@ saveRDS(geno_pcs,paste0(name,"_geno_pcs.rds"))
 geno_pcs=geno_pcs[1:geno_pcs_n,]
 
 
-
+#######################################################
 ### GET RESIDUALS (2-STEP approach, if TRUE) ###
-####################################
+#################################################
+
 
 if(get_exp_residuals==TRUE){
  
@@ -255,9 +231,6 @@ if(get_exp_residuals==TRUE){
   message(paste0("Correcting expression matrix for known covariates.\nUser-defined covariates: '",paste(covs,collapse=", "),"'"))  
 
     covs_to_include=covs
-
-    #check if Diagnosis exists. If it does, do random effects on both Diagnosis + Sample_source. Otherwise, just sample source.
-    #this is reflected inside the get_residuals() function.
     
     if ("Diagnosis" %in% covs_to_include) {
 
@@ -276,6 +249,35 @@ if(get_exp_residuals==TRUE){
   write.table(exp_mat,paste0(name,"_residuals_pseudobulk.csv"))
   }
 }
+
+
+####################################
+### GET PCS ###
+####################################
+
+if(ncol(exp_mat)<100){
+    down_signif <- function(x, digits = 0) {
+        m <- 10^(ceiling(log(x, 10)) - digits)
+        (x %/% m)*m
+      }
+    max_pcs=down_signif(ncol(exp_mat),1)/10
+}else{
+    max_pcs=10
+}
+message("Getting PCs...")
+pcs<-prcomp(exp_mat,scale=F,center=F)
+pcs<-pcs$rotation
+pcs<-pcs[,1:(max_pcs*10)]
+pcs<-t(pcs)
+pcs<-pcs[,colnames(exp_mat)]
+rownames(pcs)<-paste0(rep("PC."),1:(max_pcs*10))
+
+if(get_exp_residuals==TRUE){
+  write.table(pcs,paste0(name,"_full_residualexpression_PCs.txt"))
+}else{
+  write.table(pcs,paste0(name,"_full_expression_PCs.txt"))
+}
+
 
 ####################################
 ### OPTIMIZE N_PCS #################
