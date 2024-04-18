@@ -229,18 +229,8 @@ if(get_exp_residuals==TRUE){
   message("You must supply a covariate file to obtain corrected expression residuals.")
  }else{
   message(paste0("Correcting expression matrix for known covariates.\nUser-defined covariates: '",paste(covs,collapse=", "),"'"))  
-
-    covs_to_include=covs
-    
-    if ("Diagnosis" %in% covs_to_include) {
-
-      fixed_effects <- covs_to_include[!covs_to_include %in% c("Diagnosis", "Sample_Source")]
-      lmmodel = paste0("gene ~ ", paste(fixed_effects, collapse = " + "), " + (1 + Diagnosis | Sample_Source)")
-    } else {
-      fixed_effects <- covs_to_include[covs_to_include != "Sample_Source"]
-      lmmodel = paste0("gene ~ ", paste(fixed_effects, collapse = " + "), " + (1 | Sample_Source)")
-    }
-    message(paste0("Obtaining residuals using lm(): "),lmmodel)
+covs_to_include=covs
+lmmodel = paste0("gene ~ ", paste(covs_to_include, collapse = " + "))
 
   exp_mat=suppressMessages(get_residuals(exp_mat,
   covs_to_include=covs,
