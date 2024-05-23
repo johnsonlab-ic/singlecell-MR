@@ -1,6 +1,6 @@
 
 ##load helper functions from cellCOLOC_source.r. Mostly for cellCOLOC_obj s4 structure and cellMR function
-source("../4_colocalisation/cellCOLOC_source.r")
+source("../5_colocalisation/cellCOLOC_source.r")
 
 
 #define inputs /parameters
