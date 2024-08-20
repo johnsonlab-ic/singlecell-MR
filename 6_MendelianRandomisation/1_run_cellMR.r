@@ -28,3 +28,10 @@ r2_cutoff=0.01)
 if(length(mr_results)>1){
     write.table(mr_results,paste0(GWAS_name,"_MR_results.txt"))
 }
+
+mr_res_PCA_999 = run_cellMR_IVPCA(cellCOLOC_obj = cellCOLOC_obj, 
+coloc_res = coloc_df, pph4_cutoff = pph4_cutoff, 
+eqtl_FDR_cutoff = 0.05, percentage_variance = 0.999)
+
+
+write.table(mr_res_PCA_999, paste0(GWAS_name, "_MR_IVPCA_0.999_results.txt"))

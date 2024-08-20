@@ -399,6 +399,152 @@ path_to_binaries="/path_to_binaries/EUR/EUR"){
     
 }
 
+run_cellMR_IVPCA = function(cellCOLOC_obj,
+                            coloc_res, pph4_cutoff = 0.7,
+                            eqtl_FDR_cutoff = 0.05,
+                            percentage_variance=0.99,
+                            plink_bin = genetics.binaRies::get_plink_binary(),
+                            path_to_binaries = "/rds/general/user/ah3918/projects/single_cell_eqtl/live/MRC/REFERENCE_DATASETS/clumping_ref/EUR/EUR") {
+  
+  coloc_res = coloc_res %>% filter(PP.H4 > pph4_cutoff)
+  if (nrow(coloc_res) == 0) {
+    message("No rows left after the pph4 cutoff")
+    return(NA)
+  }
+  
+  MR_results = list()
+  
+  for (i in 1:nrow(coloc_res)) {
+    
+    hit = coloc_res[i, ]
+    region = hit$region
+    celltype = hit$celltype
+    gene = hit$gene
+    lead_snp = hit$lead_snp
+    
+    df = cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@FDR[, c("SNP", gene)]
+    df = df %>%
+      select(SNP, !!sym(gene)) %>%
+      rename_with(~ c("rsid", "pval")) %>% as.data.frame()
+
+   ##if df contains no SNPs below the FDR threshold, skip the iteration
+    
+    if (nrow(df %>% filter(pval<eqtl_FDR_cutoff)) == 0) {
+      # warning("No SNPs left after filtering for eQTL FDR in iteration ", i)
+      # MR_results[[i]] = c(celltype, gene, NA, NA, NA)
+      next
+    }
+    
+    snps_tokeep = df
+    
+    trait_beta <- cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@beta[, c("SNP", gene)] %>% filter(SNP %in% snps_tokeep$rsid)
+    trait_se <- cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@std_error[, c("SNP", gene)] %>% filter(SNP %in% snps_tokeep$rsid)
+    trait_alleles <- cellCOLOC_obj@cellTypes[[celltype]]@regions[[region]]@maf_info[, c("snp", "ref", "alt")] %>% filter(snp %in% snps_tokeep$rsid)
+    
+    gwas_beta <- cellCOLOC_obj@gwas[[region]]@beta %>% filter(rsid %in% snps_tokeep$rsid)
+    gwas_se <- cellCOLOC_obj@gwas[[region]]@std_error %>% filter(rsid %in% snps_tokeep$rsid)
+    gwas_alleles = cellCOLOC_obj@gwas[[region]]@alleles %>% filter(rsid %in% snps_tokeep$rsid)
+    
+    #### 28th Dec 2023 UPDATE - MungeSumstats considers A2 to be the effect allele and not A1.
+    ### In the below code, A1 = effect allele (as by convention).
+    # https://neurogenomics.github.io/MungeSumstats/articles/MungeSumstats.html
+    ### Changing so that "gwas_A1" is actually gwas_alleles$A2 .
+    # Additionally, the SeqArray genotype data is in the form of 0,1,2 where 0 is alternate allele dosage.
+    # In MatrixEQTL additive model, the ref allele is therefore the effect allele.
+    
+    mr_df = data.frame(SNP = trait_beta$SNP, eqtl_beta = trait_beta[, 2],
+                       eqtl_se = trait_se[, 2],
+                       eqtl_A1 = trait_alleles$ref,
+                       eqtl_A2 = trait_alleles$alt,
+                       gwas_beta = gwas_beta$b,
+                       gwas_se = gwas_se$se,
+                       gwas_A1 = gwas_alleles$A2,
+                       gwas_A2 = gwas_alleles$A1)
+    
+    colnames(mr_df) = c("SNP", "eqtl_beta", "eqtl_se", "eqtl_A1", "eqtl_A2", "gwas_beta", "gwas_se", "gwas_A1", "gwas_A2")
+    
+    mr_df = mr_df %>%
+      mutate(
+        eqtl_beta = ifelse(eqtl_A1 != gwas_A1 & eqtl_A1 == gwas_A2, -eqtl_beta, eqtl_beta)
+      )
+    
+    ldmat = ieugwasr::ld_matrix_local(mr_df$SNP, plink_bin = plink_bin, bfile = path_to_binaries, with_alleles = F)
+    
+    mr_df = mr_df %>% filter(SNP %in% rownames(ldmat))
+    MRInputObject <- MendelianRandomization::mr_input(bx = mr_df$eqtl_beta,
+                                                      bxse = mr_df$eqtl_se, by = mr_df$gwas_beta, byse = mr_df$gwas_se)
+   rho=ldmat
+
+    ###Start of Burgess Code 
+    betaXG=MRInputObject@betaX
+    sebetaXG=MRInputObject@betaXse
+
+    betaYG=MRInputObject@betaY
+    sebetaYG=MRInputObject@betaYse
+
+    Phi = (betaXG/sebetaYG)%o%(betaXG/sebetaYG)*rho
+
+
+    # summary(prcomp(Phi, scale=FALSE))
+    K = which(cumsum(prcomp(Phi, scale=FALSE)$sdev^2/sum((prcomp(Phi, scale=FALSE)$sdev^2)))>percentage_variance)[1]
+    # K is number of principal components to include in analysis
+    # this code includes principal components to explain 99% of variance in the risk factor
+    prcomp_result <- prcomp(Phi, scale=FALSE)
+    betaXG0 = as.numeric(betaXG%*%prcomp(Phi, scale=FALSE)$rotation[,1:K])
+    betaYG0 = as.numeric(betaYG%*%prcomp(Phi, scale=FALSE)$rotation[,1:K])
+    Omega = sebetaYG%o%sebetaYG*rho
+    pcOmega = t(prcomp(Phi, scale=FALSE)$rotation[,1:K])%*%Omega%*%prcomp(Phi, scale=FALSE)$rotation[,1:K]
+    beta_IVWcorrel.pc = solve(t(betaXG0)%*%solve(pcOmega)%*%betaXG0)*t(betaXG0)%*%solve(pcOmega)%*%betaYG0
+    se_IVWcorrel.fixed.pc = sqrt(solve(t(betaXG0)%*%solve(pcOmega)%*%betaXG0))
+
+
+    ###End of Burgess Code 
+
+    ##calculate dimensions
+    lower_tri_indices <- lower.tri(rho, diag = FALSE)
+    lower_tri_values <- rho[lower_tri_indices]
+
+    # Calculate the mean and standard deviation of the lower triangular values
+    mean_ld <- mean(lower_tri_values)
+    std_ld <- sd(lower_tri_values)
+
+    # Calculate the mean correlation between the selected PCs
+    mean_pc_cor <- NA
+
+    # Error handling using tryCatch
+    tryCatch({
+      selected_pcs <- prcomp_result$x[, 1:K]
+      pc_cor_matrix <- cor(selected_pcs)
+      lower_tri_pc_indices <- lower.tri(pc_cor_matrix, diag = FALSE)
+      mean_pc_cor <- mean(pc_cor_matrix[lower_tri_pc_indices])
+    }, error = function(e) {
+      # Log the error message
+      message("An error occurred: ", e$message)
+      # Optionally, you can set mean_pc_cor to a default value if needed
+      mean_pc_cor <- NA
+    })
+
+  
+    res = data.frame(
+      celltype = celltype,
+      gene = gene,
+      n_ivs = nrow(Phi),
+      IVWcorrel_beta = signif(beta_IVWcorrel.pc, 4),
+      IVWcorrel_se = signif(se_IVWcorrel.fixed.pc, 4),
+      IVWcorrel_pval = signif(2 * pnorm(-abs(beta_IVWcorrel.pc / se_IVWcorrel.fixed.pc)), 4),
+      check.names = FALSE,
+      n_PCS = K,
+      mean_ld = mean_ld,
+      std_ld = std_ld,
+      mean_pc_cor = mean_pc_cor
+    )
+
+    MR_results[[i]]=res
+
+  }
+  MR_results=as.data.frame(do.call(rbind,MR_results))
+    return(MR_results)
+}
 ### define cellCOLOC_object classes. simplifies downstream processing
 # Redefine the regionData class
 setClass(
